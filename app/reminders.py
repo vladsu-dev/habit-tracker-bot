@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from datetime import UTC, date, datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from requests import RequestException
 from sqlalchemy import BigInteger, Date, ForeignKey, select
@@ -13,7 +13,7 @@ from telebot.apihelper import ApiException, ApiTelegramException
 
 from app.accounts import User
 from app.database import Base, SessionFactory
-from app.habits import list_today
+from app.habits.service import list_habit_rows
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +43,8 @@ def send_daily_reminder(
     timestamp = int(now.timestamp())
     if delivery and (delivery.finished or delivery.retry_after > timestamp):
         return
-    daily_list = list_today(session, user)
-    if daily_list["date"] != day.isoformat():
-        return
-    pending = [habit for habit in daily_list["habits"] if habit["completed"] is None]
+    daily_habits = list_habit_rows(session, user, day)
+    pending = [habit for habit in daily_habits if habit["completed"] is None]
     if not pending:
         return
     if delivery is None:
@@ -85,15 +83,22 @@ def send_daily_reminder(
     session.commit()
 
 
+def run_delivery_cycle(bot: TeleBot) -> None:
+    with SessionFactory() as session:
+        user_ids = session.scalars(select(User.id)).all()
+    for user_id in user_ids:
+        try:
+            with SessionFactory() as session:
+                send_daily_reminder(session, user_id, bot, datetime.now(UTC))
+        except (SQLAlchemyError, ZoneInfoNotFoundError, ValueError) as error:
+            logger.warning("Recipient reminder failed (%s)", type(error).__name__)
+
+
 def run_worker() -> None:
     bot = TeleBot(os.environ["TELEGRAM_BOT_TOKEN"], threaded=False)
     while True:
         try:
-            with SessionFactory() as session:
-                user_ids = session.scalars(select(User.id)).all()
-            for user_id in user_ids:
-                with SessionFactory() as session:
-                    send_daily_reminder(session, user_id, bot, datetime.now(UTC))
+            run_delivery_cycle(bot)
         except SQLAlchemyError as error:
             logger.error("Reminder cycle failed (%s)", type(error).__name__)
         time.sleep(30)
