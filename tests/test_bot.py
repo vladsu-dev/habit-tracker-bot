@@ -167,7 +167,8 @@ def test_settings_and_confirmed_deletion():
         assert json.loads(requests[-1].content) == {field: value}
     tracker.handle_action(19, "delete:28")
     assert len(requests) == 3
-    tracker.handle_action(19, "confirm:28")
+    button = bot.send_message.call_args.kwargs["reply_markup"].keyboard[0][0]
+    tracker.handle_action(19, button.callback_data)
     assert requests[-1].method == "DELETE"
     assert requests[-1].url.path == "/habits/28"
 
@@ -189,3 +190,38 @@ def test_private_polling_entrypoint(monkeypatch):
     telegram.infinity_polling.assert_called_once_with(
         skip_pending=True, allowed_updates=["message", "callback_query"]
     )
+
+
+def test_cancelled_delete_button_stays_cancelled_when_prompt_reopens():
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(204)
+
+    tracker, bot = setup(handle)
+    tracker.sessions[19] = ("token", monotonic() + 60)
+    tracker.handle_action(19, "delete:28")
+    first_button = bot.send_message.call_args.kwargs["reply_markup"].keyboard[0][0]
+    tracker.handle_action(19, "menu")
+    tracker.handle_action(19, "delete:28")
+    current_button = bot.send_message.call_args.kwargs["reply_markup"].keyboard[0][0]
+    tracker.handle_action(19, first_button.callback_data)
+    assert not requests
+    tracker.handle_action(19, current_button.callback_data)
+    tracker.handle_action(19, current_button.callback_data)
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("DELETE", "/habits/28")
+    ]
+
+
+def test_logout_closes_session_even_after_edit_prompt_expires():
+    def handle(request):
+        assert request.url.path == "/auth/logout"
+        return httpx.Response(204)
+
+    tracker, _ = setup(handle)
+    tracker.sessions[19] = ("token", monotonic() + 60)
+    tracker.inputs[19] = Input("name", monotonic() - 1)
+    tracker.handle_message(message("/logout"))
+    assert tracker.get_token(19) is None
