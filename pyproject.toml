@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "habit-tracker-bot"
+version = "0.1.0"
+description = "Личный трекер привычек в Telegram"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.15"
+fastapi = ">=0.115,<1"
+pydantic = ">=2.10,<3"
+uvicorn = ">=0.34,<1"
+sqlalchemy = ">=2.0,<2.1"
+psycopg = {version = ">=3.2,<4", extras = ["binary"]}
+alembic = ">=1.14,<2"
+pyTelegramBotAPI = ">=4.26,<5"
+httpx = ">=0.28,<1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8,<10"
+ruff = ">=0.10,<1"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
