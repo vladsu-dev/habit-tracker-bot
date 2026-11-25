@@ -54,7 +54,12 @@ class HabitPresenter:
     def prompt(self, user, action, text, habit_id="", name=""):
         pending = Input(action, monotonic() + INPUT_TTL, habit_id, name)
         markup = None
-        if action == "target" and not habit_id:
+        if action == "delete":
+            pending.prompt_key = token_hex(8)
+            markup = build_keyboard(
+                [("Удалить", f"confirm:{pending.prompt_key}"), ("Отмена", "menu")]
+            )
+        elif action == "target" and not habit_id:
             pending.prompt_key = token_hex(4)
             markup = build_keyboard(
                 [("Выбрать 21 раз", f"default:{pending.prompt_key}")]
@@ -115,23 +120,31 @@ class HabitPresenter:
         render_habit_list(partial(self.send, user), result, page, include_completed)
 
     def handle_action(self, user, data):
-        if data.startswith("default:"):
+        if data.startswith(("default:", "confirm:")):
+            button, prompt_key = data.split(":", 1)
             pending = self.inputs.get(user)
             if (
-                self.get_token(user)
-                and pending
-                and pending.action == "target"
-                and pending.expires > monotonic()
-                and pending.prompt_key
-                and data == f"default:{pending.prompt_key}"
+                not self.get_token(user)
+                or pending is None
+                or pending.expires <= monotonic()
+                or not prompt_key
+                or pending.prompt_key != prompt_key
+                or pending.action != {"default": "target", "confirm": "delete"}[button]
             ):
-                self.save_habit(user, pending, 21)
-            else:
                 self.send(
                     user,
                     "Эта кнопка устарела.",
                     build_main_menu() if self.get_token(user) else build_login_menu(),
                 )
+                return
+            if button == "default":
+                self.save_habit(user, pending, 21)
+            elif (
+                self.request_api(user, "DELETE", f"/habits/{pending.habit_id}")
+                is not None
+            ):
+                self.inputs.pop(user, None)
+                self.send(user, "Привычка удалена.", build_main_menu())
             return
         self.inputs.pop(user, None)
         if data in {"register", "login"} and not self.get_token(user):
@@ -165,22 +178,14 @@ class HabitPresenter:
             self.prompt(user, "name", "Введите название привычки (до 120 символов).")
         elif (
             len(parts) == 2
-            and parts[0] in {"edit", "delete", "confirm"}
+            and parts[0] in {"edit", "delete"}
             and is_valid_habit_id(parts[1])
         ):
             habit_id = parts[1]
             if parts[0] == "edit":
                 self.prompt(user, "name", "Введите новое название привычки.", habit_id)
-            elif parts[0] == "delete":
-                self.send(
-                    user,
-                    "Удалить привычку и её отметки?",
-                    build_keyboard(
-                        [("Удалить", f"confirm:{habit_id}"), ("Отмена", "menu")]
-                    ),
-                )
-            elif self.request_api(user, "DELETE", f"/habits/{habit_id}") is not None:
-                self.send(user, "Привычка удалена.", build_main_menu())
+            else:
+                self.prompt(user, "delete", "Удалить привычку и её отметки?", habit_id)
         elif (
             len(parts) == 4
             and parts[0] == "mark"
@@ -251,6 +256,20 @@ class HabitPresenter:
         if value == "/cancel":
             self.handle_action(user, "menu")
             return
+        commands = {
+            "/start": "menu",
+            "/menu": "menu",
+            "/today": "today",
+            "/all": "all",
+            "/add": "add",
+            "/settings": "settings",
+            "/logout": "logout",
+            "/login": "login",
+            "/register": "register",
+        }
+        if not secret and value in commands:
+            self.handle_action(user, commands[value])
+            return
         if pending and pending.expires <= monotonic():
             self.inputs.pop(user, None)
             self.send(
@@ -281,22 +300,11 @@ class HabitPresenter:
                 )
                 self.send(user, "Вы вошли в трекер привычек.", build_main_menu())
             return
-        commands = {
-            "/start": "menu",
-            "/menu": "menu",
-            "/today": "today",
-            "/all": "all",
-            "/add": "add",
-            "/settings": "settings",
-            "/logout": "logout",
-            "/login": "login",
-            "/register": "register",
-        }
-        if value in commands:
-            self.handle_action(user, commands[value])
-            return
         if not pending or not self.get_token(user):
             self.handle_action(user, "menu")
+            return
+        if pending.action == "delete":
+            self.send(user, "Подтвердите удаление кнопкой или отправьте /cancel.")
             return
         value = value.strip()
         if pending.action == "name":
